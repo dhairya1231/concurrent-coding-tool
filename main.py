@@ -5,40 +5,85 @@ from fastapi.responses import HTMLResponse
 app = FastAPI()
 
 
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: str):
+        for connection in self.active_connections.copy():
+            await connection.send_text(message)
+
+
+manager = ConnectionManager()
+
+
 @app.get("/")
 async def home():
     return HTMLResponse("""
     <!DOCTYPE html>
     <html>
     <head>
-        <title>SyncCode - WebSocket Test</title>
+        <title>SyncPad</title>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                max-width: 900px;
+                margin: 40px auto;
+                padding: 0 20px;
+            }
+
+            #status {
+                color: green;
+            }
+
+            textarea {
+                width: 100%;
+                height: 400px;
+                padding: 12px;
+                box-sizing: border-box;
+                font: 16px monospace;
+                resize: vertical;
+            }
+        </style>
     </head>
     <body>
-        <h1>SyncCode WebSocket Test</h1>
+        <h1>SyncPad</h1>
         <p id="status">Connecting...</p>
 
-        <input id="message" placeholder="Enter a message">
-        <button onclick="sendMessage()">Send</button>
-
-        <h3>Messages</h3>
-        <ul id="messages"></ul>
+        <textarea id="editor"
+            placeholder="Start typing here..."></textarea>
 
         <script>
             const ws = new WebSocket(
                 `ws://${location.host}/ws`
             );
 
+            const editor = document.getElementById("editor");
             const status = document.getElementById("status");
-            const messages = document.getElementById("messages");
 
             ws.onopen = () => {
-                status.textContent = "Connected!";
+                status.textContent = "Connected";
             };
 
             ws.onmessage = (event) => {
-                const li = document.createElement("li");
-                li.textContent = event.data;
-                messages.appendChild(li);
+                if (editor.value !== event.data) {
+                    const start = editor.selectionStart;
+                    const end = editor.selectionEnd;
+
+                    editor.value = event.data;
+
+                    editor.setSelectionRange(
+                        Math.min(start, editor.value.length),
+                        Math.min(end, editor.value.length)
+                    );
+                }
             };
 
             ws.onclose = () => {
@@ -49,14 +94,11 @@ async def home():
                 status.textContent = "Connection error";
             };
 
-            function sendMessage() {
-                const input = document.getElementById("message");
-
-                if (ws.readyState === WebSocket.OPEN && input.value) {
-                    ws.send(input.value);
-                    input.value = "";
+            editor.addEventListener("input", () => {
+                if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(editor.value);
                 }
-            }
+            });
         </script>
     </body>
     </html>
@@ -65,12 +107,13 @@ async def home():
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
+    await manager.connect(websocket)
 
     try:
         while True:
             message = await websocket.receive_text()
-            await websocket.send_text(f"Server received: {message}")
+            await manager.broadcast(message)
 
     except WebSocketDisconnect:
+        manager.disconnect(websocket)
         print("Client disconnected")
